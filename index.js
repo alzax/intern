@@ -8,9 +8,23 @@ const port = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json({ limit: '10mb' })); // Увеличиваем лимит тела запроса
 
-app.post('/upload', (req, res) => {
+// Асинхронная функция для загрузки файла через SFTP
+const uploadFileViaSFTP = async (sftp, remoteFilePath, code) => {
+  return new Promise((resolve, reject) => {
+    sftp.writeFile(remoteFilePath, code, (err) => {
+      if (err) {
+        reject(new Error('Ошибка при записи файла на сервере: ' + err.message));
+      } else {
+        resolve('Файл успешно загружен на сервер.');
+      }
+    });
+  });
+};
+
+app.post('/upload', async (req, res) => {
   const { code, serverIp, username, privateKey, projectFolder, filename } = req.body;
 
+  // Проверка на наличие всех необходимых данных
   if (!code || !serverIp || !username || !privateKey || !projectFolder || !filename) {
     return res.status(400).json({ message: 'Отсутствуют необходимые данные для подключения.' });
   }
@@ -21,7 +35,7 @@ app.post('/upload', (req, res) => {
     .on('ready', () => {
       console.log('SSH-соединение установлено.');
 
-      conn.sftp((err, sftp) => {
+      conn.sftp(async (err, sftp) => {
         if (err) {
           console.error('Ошибка при установлении SFTP-сессии:', err);
           conn.end();
@@ -30,22 +44,21 @@ app.post('/upload', (req, res) => {
 
         const remoteFilePath = `${projectFolder}/${filename}`;
 
-        sftp.writeFile(remoteFilePath, code, (err) => {
-          if (err) {
-            console.error('Ошибка при записи файла на сервере:', err);
-            conn.end();
-            return res.status(500).json({ message: 'Ошибка при записи файла на сервере.' });
-          }
-
-          console.log('Файл успешно загружен на сервер.');
-          res.json({ message: 'Код успешно загружен на сервер по SSH.' });
+        try {
+          const uploadMessage = await uploadFileViaSFTP(sftp, remoteFilePath, code);
+          console.log(uploadMessage);
+          res.json({ message: uploadMessage });
+        } catch (uploadError) {
+          console.error(uploadError.message);
+          res.status(500).json({ message: uploadError.message });
+        } finally {
           conn.end();
-        });
+        }
       });
     })
     .on('error', (err) => {
       console.error('Ошибка SSH-соединения:', err);
-      res.status(500).json({ message: 'Ошибка SSH-соединения.' });
+      res.status(500).json({ message: 'Ошибка SSH-соединения. Проверьте правильность данных для подключения.' });
     })
     .connect({
       host: serverIp,
